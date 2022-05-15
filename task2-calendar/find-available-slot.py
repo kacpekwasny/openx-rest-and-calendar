@@ -6,17 +6,6 @@ from glob import glob
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
 
-#class Calendar:
-#    def __init__(self, name: str, *busy: Duration) -> None:
-#        self.name = name
-#        self.busy = busy
-#    
-#    def busy_at(self, time: datetime) -> tuple[bool, timedelta]:
-#        """
-#        returns
-#            bool: if busy at 'time' then True
-#            timedelta: if not busy at 'time' then return how much time till busy
-#        """
 
 SECOND = timedelta(seconds=1)
 
@@ -25,16 +14,15 @@ SECOND = timedelta(seconds=1)
 class Busy:
     start: datetime 
     end: datetime
-    next: Busy = field(default=None)
+    next: Busy = None
 
-    def ended_by(self, time: datetime) -> bool:
-        return self.end < time
 
-@dataclass
 class Calendar:
-    name: str
-    events: list[Busy] = field(default_factory=list)
-    last_checked: Busy = field(default=None)
+    def __init__(self, name: str) -> None:
+        self.name: str = name.split("\\")[-1]
+        self.events: list[Busy] = []
+        self.last_checked: Busy = None
+        self.free_from: datetime = None
 
     def add_event(self, event: Busy) -> None:
         if self.events:
@@ -43,17 +31,21 @@ class Calendar:
 
     def soonest_available_time(self, duration: timedelta, search_from: datetime) -> datetime:
         if len(self.events) == 0 or self.events[0].start - search_from >= duration:
+            self.free_from = search_from
             return search_from
 
         if self.last_checked is None:
             self.last_checked = self.events[0]
     
         while self.last_checked.next is not None:
-            if self.last_checked.next.start - self.last_checked.end >= duration:
-                return self.last_checked.end + SECOND
+            if (self.last_checked.next.start - self.last_checked.end >= duration
+                and self.last_checked.end >= search_from):
+                self.free_from = self.last_checked.end + SECOND
+                return self.free_from
             self.last_checked = self.last_checked.next
         
-        return self.last_checked.end + SECOND
+        self.free_from = self.last_checked.end + SECOND
+        return self.free_from
 
     def is_free_at(self, duration: timedelta, start_time: datetime) -> bool:
         if not self.events:
@@ -63,9 +55,14 @@ class Calendar:
                         < start_time
                             < self.last_checked.next.start - duration)
         
-        print("This should not be printed, because the is_free_at function should be called after the")
+        if self.last_checked.next is None:
+            return True
+        
+        print("~~~~~~~~~ This should not be printed, because the is_free_at function should be called after the ~~~~~~~~~")
         return self.soonest_available_time(duration, start_time) < start_time
 
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self.name=} {self.free_from=})"
 
 
 @dataclass
@@ -87,7 +84,7 @@ class Calendars:
                     # the whole day is full
                     if len(striped) == 10:
                         start = datetime.strptime(striped, '%Y-%m-%d')
-                        self.calendars[name].add_event(Busy(start, start + timedelta(hours=23, minutes=59)))
+                        self.calendars[name].add_event(Busy(start, start + timedelta(hours=23, minutes=59, seconds=59)))
                         continue
 
                     # the duration of being busy is determined by two datetimes
@@ -99,25 +96,21 @@ class Calendars:
                         end=datetime.strptime(end, time_format)
                     ))
 
-    def soonest_available_time_users(self, duration: timedelta, search_from: datetime) -> tuple[str, datetime, dict[str, datetime]]:
+    def update_soonest_available_time(self, duration: timedelta, search_from: datetime) -> Calendar:
         """
+        For every calendar update soonest available time, and find the soonest
         returns:
-            Tuple[
-                str: who's calendar is this
-                datetime: when is the available time
-            ]
+            Calendar: 
         """
-        soonest: datetime = None
-        soonest_name: str = None
-        for name, cal in self.calendars.items():
+        soonest: Calendar = None
+        for cal in self.calendars.values():
             available = cal.soonest_available_time(duration, search_from)
-            if soonest is None or available < soonest:
-                soonest = available
-                soonest_name = name
+            if soonest is None or available < soonest.free_from:
+                soonest = cal
 
-        return soonest_name, soonest
+        return soonest
 
-    def who_available_at(self, time: datetime, duration: timedelta) -> list[Calendar]:
+    def who_available_at(self, duration: timedelta, time: datetime) -> list[Calendar]:
         who: list[str] = []
         for cal in self.calendars.values():
             if cal.is_free_at(duration, time):
@@ -139,12 +132,12 @@ class Calendars:
             datetime - if a datetime that fullfils requirements was found
         """
 
-        # pierwszy dostępny czas dłuuższy niż X
+        # pierwszy dostępny czas >= X
         # kto jest dostępny na X od tego czasu
         # czy to jest > n ludzi
         # 
         # NIE
-        # jaki jest kolejny dostępny czas > X
+        # jaki jest kolejny dostępny czas >= X
         # kto jest dostępny na X od tego czasu
         # czy to jest > n ludzi  
 
@@ -153,18 +146,19 @@ class Calendars:
         if n < 1:
             raise ValueError("'n' has to be at least 1.")
 
-        if len(self.calendars) > n:
+        if len(self.calendars) < n:
             return [], None
 
-        # find soonest available time
-        _, soonest_available = self.soonest_available_time_users(duration, search_from)
-        found = False
-        while not found:
-            who = self.who_available_at(soonest_available, duration)
+        # find soonest available time >= X
+        soonest_available_calendar = self.update_soonest_available_time(duration, search_from)
+        while True:
+            # Who is available at this time
+            who = self.who_available_at(duration, soonest_available_calendar.free_from)
             if len(who) >= n:
-                return who, soonest_available
-            sorted(who, key=lambda cal: cal.last_checked.end)[0]
-        return [], None
+                return who, soonest_available_calendar.free_from
+            calendars = list(filter(lambda x: x.free_from > soonest_available_calendar.free_from, list(self.calendars.values())))
+            calendars.sort(key=lambda cal: cal.free_from)
+            soonest_available_calendar = self.update_soonest_available_time(duration, calendars[0].free_from)
 
 
 if __name__ == "__main__":
@@ -173,16 +167,18 @@ if __name__ == "__main__":
     parser.add_argument("--minimum-people", type=int, required=True)
     parser.add_argument("--calendars", type=str, required=True)
     namespace = parser.parse_args(argv[1:])
-
-    cale = namespace.calendars
-    cale = cale[:-1] if cale[-1] == "/" else cale
-    calendars_file_names = glob(f"{cale}/*.txt")
+    
+    
+    #pref = "C:\\Users\\quatr\\IT\\Code\\openx-REST-and-calendar\\task2-calendar\\in\\"
+    pref = namespace.calendars
+    path = f"{pref}*.txt"
+    calendars_file_names = glob(path)
 
     cals = Calendars()
     cals.load_calendars(calendars_file_names)
 
-    x = cals.find_available(timedelta(minutes=90), datetime(2022, 7, 1), 2)
-    print(x)
+    x = cals.find_available(timedelta(minutes=90), datetime(2022, 7, 1), namespace.minimum_people)
+    print(x[1], [c.name for c in x[0]])
 #    for k, cal in cals.calendars.items():
 #        print(k, cal.soonest_available_time(timedelta(minutes=30), datetime(2022, 7, 1)))
 #        for d in cal.events:
