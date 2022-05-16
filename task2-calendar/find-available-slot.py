@@ -1,81 +1,142 @@
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from sys import argv
-from glob import glob
 from argparse import ArgumentParser
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from glob import glob
+from sys import argv
 
-
-SECOND = timedelta(seconds=1)
-
+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 @dataclass
-class Busy:
-    start: datetime 
-    end: datetime
-    next: Busy = None
+class Event:
+    def __init__(self, start: datetime, end: datetime) -> None:
+        """
+        raises:
+            ValueError if start >= end
+        """
+        if start > end:
+            raise ValueError(f"The event ends before it starts! {start=} {end=}")
+        self.start = start
+        self.end = end
+        self.next: Event = None # Next event in calendar
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self.start=} {self.end=})"
 
 
 class Calendar:
-    def __init__(self, name: str) -> None:
-        self.name: str = name.split("\\")[-1]
-        self.events: list[Busy] = []
-        self.last_checked: Busy = None
+    def __init__(self, name: str, duration: datetime, start_time: datetime, events: list[Event]) -> None:
+        split_by = "/" if "/" in name else "\\"
+        self.name = name.split(split_by)[-1]
+
+        self.events: list[Event] = []
+        self.__add_events(start_time, events)
+        self.last_checked: Event = self.events[0]
+
+        self.duration = duration
+        "We are searching for an empty slot of such duration"
+
         self.free_from: datetime = None
-
-    def add_event(self, event: Busy) -> None:
-        if self.events:
-            self.events[-1].next = event
-        self.events.append(event)
-
-    def soonest_available_time(self, duration: timedelta, search_from: datetime) -> datetime:
-        if len(self.events) == 0 or self.events[0].start - search_from >= duration:
-            self.free_from = search_from
-            return search_from
-
-        if self.last_checked is None:
-            self.last_checked = self.events[0]
+        "At this time there is at least a free slot of length of duration or longer"
     
+    def __add_events(self, start_time: datetime, events: list[Event]) -> None:
+        """
+        add an events to the calendar assuming every one starts after the previous one ends
+        raises:
+            ValueError if the assumption is not met
+        """
+        prev = Event(datetime(1,1,1), start_time)
+        self.events.append(prev)
+        for e in events:
+            if prev.end > e.start:
+                raise ValueError(f"The {e=} starts before the last event {self.events[-1]} {self.name}")
+            prev.next = e
+            prev = e
+            self.events.append(e)
+
+    def update_free_from(self, search_from: datetime) -> datetime:
+        """
+        free_from is the first datetime when there is a break in the calendar longer than duration
+            but free_from is never before search_from
+        returns:
+            datetime: self.free_from
+        """
+
+        # jeżeli wiemy kiedy istnieje przerwa >= duration
+        if self.free_from:
+            
+            # jeżeli ta przerwa dopiero będzie
+            if search_from < self.free_from:
+                return self.free_from
+
+            # jeżeli to jest ostatni Event
+            if self.last_checked.next is None:
+                self.free_from = self.last_checked.end
+                return self.free_from
+
+            # jeżeli ta przerwa już się zaczeła
+            if search_from + self.duration <= self.last_checked.next.start:
+                self.free_from = search_from
+                return self.free_from
+            
+            # przerwa się zaczeła, ale zostało w niej za mało czasu
+
+        # trzeba przeszukać kolejne eventy czy pomiędzy nimi jest przerwa
         while self.last_checked.next is not None:
-            if (self.last_checked.next.start - self.last_checked.end >= duration
-                and self.last_checked.end >= search_from):
-                self.free_from = self.last_checked.end + SECOND
+
+            # jeżeli przerwa między końcem eventu a początkiem kolejnego jest przynajmniej długości duration
+            if self.last_checked.end >= search_from and self.last_checked.next.start - self.last_checked.end >= self.duration:
+                self.free_from = self.last_checked.end
                 return self.free_from
             self.last_checked = self.last_checked.next
-        
-        self.free_from = self.last_checked.end + SECOND
-        return self.free_from
 
-    def is_free_at(self, duration: timedelta, start_time: datetime) -> bool:
-        if not self.events:
-            return True
-        if self.last_checked is not None and self.last_checked.next is not None:
-            return (self.last_checked.end
-                        < start_time
-                            < self.last_checked.next.start - duration)
-        
+        self.free_from = self.last_checked.end
+
+    def how_much_free_time(self, search_from) -> timedelta:
+        """
+        Tells how much time the next break will have
+        If there is no event next, then returns timedelta(hours=24*365.25*1000) -> thousand years.
+        """
+        inf = timedelta(hours=24 * 365.25 * 1000)
         if self.last_checked.next is None:
-            return True
-        
-        print("~~~~~~~~~ This should not be printed, because the is_free_at function should be called after the ~~~~~~~~~")
-        return self.soonest_available_time(duration, start_time) < start_time
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({self.name=} {self.free_from=})"
+            return inf
+        if self.last_checked.end <= search_from:
+            return self.last_checked.next.start - search_from
+        return timedelta(days=0)
 
 
-@dataclass
-class Calendars:
-    calendars: dict[str, Calendar] = field(default_factory=dict)
 
-    def __getitem__(self, key: str) -> Calendar:
-        return self.calendars.get(key, default=None)
+class CalendarsSlotFinder:
+    def __init__(self, calendars_dir: str, min_people: int, duration_minutes: int, search_from: datetime) -> None:
+        self.calendars_dir = calendars_dir
+        self.calendars_file_names: list[str] = []
 
-    def load_calendars(self, file_names: list[str]) -> Calendars:
+        self.min_people = min_people
+        self.duration = timedelta(minutes=duration_minutes)
+        self.search_from = search_from
+
+        self.calendars: dict[str, Calendar] = {}
+
+        # found calendar files?
+        self.calendars_file_names: list[str] = self.find_calendar_files(calendars_dir)
+        if not self.calendars_file_names:
+            raise ValueError(f"No callendars were found under this directory: {calendars_dir = }")
+
+        if len(self.calendars_file_names) < min_people:
+            raise ValueError(f"Found only {len(self.calendars_file_names)} calendars, but there should be at least as many calendars as --minimum-people")
+
+        self.load_calendars(self.find_calendar_files(self.calendars_dir))
+    @staticmethod
+    def find_calendar_files(calendars_dir) -> list[str]:
+        path = f"{calendars_dir}*.txt"
+        return glob(path)
+
+    def load_calendars(self, file_names: list[str]) -> None:
+        """
+        Open files in calendars_dir
+        """
         for name in file_names:
-            self.calendars[name] = Calendar(name)
             with open(name, "r", encoding="utf-8") as f:
+                events: list[Event] = []
                 for line in f.read().split("\n"):
                     striped = line.strip()
                     if striped == "":
@@ -84,83 +145,75 @@ class Calendars:
                     # the whole day is full
                     if len(striped) == 10:
                         start = datetime.strptime(striped, '%Y-%m-%d')
-                        self.calendars[name].add_event(Busy(start, start + timedelta(hours=23, minutes=59, seconds=59)))
+                        events.append(Event(start, start + timedelta(hours=23, minutes=59, seconds=59)))
                         continue
 
                     # the duration of being busy is determined by two datetimes
                     begin = striped[:19]
                     end = striped[22:]
                     time_format = '%Y-%m-%d %H:%M:%S'
-                    self.calendars[name].add_event(Busy(
+                    events.append(Event(
                         start=datetime.strptime(begin, time_format),
                         end=datetime.strptime(end, time_format)
                     ))
 
-    def update_soonest_available_time(self, duration: timedelta, search_from: datetime) -> Calendar:
-        """
-        For every calendar update soonest available time, and find the soonest
-        returns:
-            Calendar: 
-        """
-        soonest: Calendar = None
-        for cal in self.calendars.values():
-            available = cal.soonest_available_time(duration, search_from)
-            if soonest is None or available < soonest.free_from:
-                soonest = cal
+            self.calendars[name] = Calendar(name, self.duration, self.search_from, events)
 
+    def update_free_from_time_and_find_soonest_free_time(self, search_from: datetime) -> Calendar:
+        soonest = Calendar("", timedelta(0), datetime(1,1,1), [])
+        soonest.free_from = datetime(year=9999, month=9, day=9)
+        for calendar in self.calendars.values():
+            if calendar.update_free_from(search_from) < soonest.free_from:
+                soonest = calendar
         return soonest
 
-    def who_available_at(self, duration: timedelta, time: datetime) -> list[Calendar]:
-        who: list[str] = []
-        for cal in self.calendars.values():
-            if cal.is_free_at(duration, time):
-                who.append(cal)
+    def who_available_at(self, time_) -> list[Calendar]:
+        who: list[Calendar] = []
+        for calendar in self.calendars.values():
+            if calendar.how_much_free_time(time_) >= self.duration:
+                who.append(calendar)
         return who
 
-    def find_available(self, duration: timedelta, search_from: datetime, n: int) -> tuple[list[Calendar], datetime]:
+    def find_available_slot(self) -> tuple[list[Calendar], datetime]:
         """
-        Find first available slot for this timedelta between all
-        search if there are
-
-        params:
-            calendars:  dict[str, list[Duration]] - the calendars representing when the users are busy
-            duration:   timedelta - how long does the free time slot have to be
-            n:          how many users at the same time have to be free
-
-        returns:
-            None - if such datetime does not exist
-            datetime - if a datetime that fullfils requirements was found
+        pierwszy dostępny czas >= X
+        kto jest dostępny na X od tego czasu
+        czy to jest > n ludzi
+        
+        NIE
+        jaki jest kolejny dostępny czas >= X
+        kto jest dostępny na X od tego czasu
+        czy to jest > n ludzi          
         """
-
-        # pierwszy dostępny czas >= X
-        # kto jest dostępny na X od tego czasu
-        # czy to jest > n ludzi
-        # 
-        # NIE
-        # jaki jest kolejny dostępny czas >= X
-        # kto jest dostępny na X od tego czasu
-        # czy to jest > n ludzi  
-
-
+        search_from, min_people = self.search_from, self.min_people
         # edge cases:
-        if n < 1:
+        if min_people < 1:
             raise ValueError("'n' has to be at least 1.")
 
-        if len(self.calendars) < n:
+        if len(self.calendars) < min_people:
             return [], None
 
         # find soonest available time >= X
-        soonest_available_calendar = self.update_soonest_available_time(duration, search_from)
+        soonest_available_calendar: Calendar = self.update_free_from_time_and_find_soonest_free_time(search_from)
         while True:
-            print(soonest_available_calendar)
-            # Who is available at this time
-            who = self.who_available_at(duration, soonest_available_calendar.free_from)
-            print(who)
-            if len(who) >= n:
+            # who is available at this time
+            who = self.who_available_at( soonest_available_calendar.free_from)
+            
+            # is this at least the minimum number of people?
+            if len(who) >= self.min_people:
                 return who, soonest_available_calendar.free_from
-            calendars = list(filter(lambda x: x.free_from > soonest_available_calendar.free_from, list(self.calendars.values())))
+
+            # calendars, that have free_from time later than the soonest_available_calendar.free_from
+            calendars = list(filter(
+                                lambda x: x.free_from > soonest_available_calendar.free_from,
+                                self.calendars.values()
+                            ))
+            
+            # sort the calendars to find first free_from time
             calendars.sort(key=lambda cal: cal.free_from)
-            soonest_available_calendar = self.update_soonest_available_time(duration, calendars[0].free_from)
+
+            # all calendars are searched for the nearest free spot that starts after the new free_from
+            soonest_available_calendar = self.update_free_from_time_and_find_soonest_free_time(calendars[0].free_from)
 
 
 if __name__ == "__main__":
@@ -168,22 +221,20 @@ if __name__ == "__main__":
     parser.add_argument("--duration-in-minutes", type=int, required=True)
     parser.add_argument("--minimum-people", type=int, required=True)
     parser.add_argument("--calendars", type=str, required=True)
+    parser.add_argument("--start", type=str, required=False, default=datetime.now().strftime(DATETIME_FORMAT))
+
     namespace = parser.parse_args(argv[1:])
+    cals = CalendarsSlotFinder(namespace.calendars,
+                               namespace.minimum_people,
+                               namespace.duration_in_minutes,
+                               datetime.strptime(namespace.start, DATETIME_FORMAT))
     
-    
-    pref = namespace.calendars
-    path = f"{pref}*.txt"
-    calendars_file_names = glob(path)
-
-    cals = Calendars()
-    cals.load_calendars(calendars_file_names)
-
-    duration = timedelta(minutes=namespace.duration_in_minutes)
-    start = datetime(2022, 5, 15)
-    min_people = namespace.minimum_people
-    print(f"{duration=} \n{start=} \n{min_people=}")
-    calendars, time = cals.find_available(duration,
-                                          start,
-                                          min_people)
+    calendars, time = cals.find_available_slot()
     print(", ".join([repr(c.name) for c in calendars]))
     print(time)
+    for calendar in calendars:
+        print(calendar.name, calendar.last_checked.end, "---", calendar.last_checked.next.start)
+
+
+
+
