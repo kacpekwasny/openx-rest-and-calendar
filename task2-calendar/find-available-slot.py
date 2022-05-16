@@ -187,4 +187,3 @@ if __name__ == "__main__":
                                           min_people)
     print(", ".join([repr(c.name) for c in calendars]))
     print(time)
-
