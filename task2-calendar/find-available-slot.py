@@ -44,6 +44,8 @@ class Calendar:
         raises:
             ValueError if the assumption is not met
         """
+        if events:
+            start_time = start_time if start_time < events[0].start else events[0].start
         prev = Event(datetime(1,1,1), start_time)
         self.events.append(prev)
         for e in events:
@@ -90,6 +92,7 @@ class Calendar:
             self.last_checked = self.last_checked.next
 
         self.free_from = self.last_checked.end
+        return self.free_from
 
     def how_much_free_time(self, search_from) -> timedelta:
         """
@@ -218,10 +221,11 @@ class CalendarsSlotFinder:
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Find first available slot for at least specified number of people.")
-    parser.add_argument("--duration-in-minutes", type=int, required=True)
-    parser.add_argument("--minimum-people", type=int, required=True)
-    parser.add_argument("--calendars", type=str, required=True)
-    parser.add_argument("--start", type=str, required=False, default=datetime.now().strftime(DATETIME_FORMAT))
+    parser.add_argument("--duration-in-minutes", type=int, required=True, help="Duration of slot in minutes")
+    parser.add_argument("--minimum-people", type=int, required=True, help="Minimum people / calendars files have to have a free slot at the same time.")
+    parser.add_argument("--calendars", type=str, required=True, help="The directory, where the calendar files are. Ex.: '/in/', '.\\in\\'.")
+    parser.add_argument("--start", type=str, required=False, default=datetime.now().strftime(DATETIME_FORMAT),
+        help="Optional. Earliest time we will look for the beginning of the slot. Default is the current time.")
 
     namespace = parser.parse_args(argv[1:])
     cals = CalendarsSlotFinder(namespace.calendars,
@@ -233,7 +237,7 @@ if __name__ == "__main__":
     print(", ".join([repr(c.name) for c in calendars]))
     print(time)
     for calendar in calendars:
-        print(calendar.name, calendar.last_checked.end, "---", calendar.last_checked.next.start)
+        print(calendar.name, calendar.last_checked.end, "---", calendar.last_checked.next.start if calendar.last_checked.next else "...")
 
 
 
