@@ -152,8 +152,10 @@ class Calendars:
         # find soonest available time >= X
         soonest_available_calendar = self.update_soonest_available_time(duration, search_from)
         while True:
+            print(soonest_available_calendar)
             # Who is available at this time
             who = self.who_available_at(duration, soonest_available_calendar.free_from)
+            print(who)
             if len(who) >= n:
                 return who, soonest_available_calendar.free_from
             calendars = list(filter(lambda x: x.free_from > soonest_available_calendar.free_from, list(self.calendars.values())))
@@ -169,7 +171,6 @@ if __name__ == "__main__":
     namespace = parser.parse_args(argv[1:])
     
     
-    #pref = "C:\\Users\\quatr\\IT\\Code\\openx-REST-and-calendar\\task2-calendar\\in\\"
     pref = namespace.calendars
     path = f"{pref}*.txt"
     calendars_file_names = glob(path)
@@ -177,10 +178,13 @@ if __name__ == "__main__":
     cals = Calendars()
     cals.load_calendars(calendars_file_names)
 
-    x = cals.find_available(timedelta(minutes=90), datetime(2022, 7, 1), namespace.minimum_people)
-    print(x[1], [c.name for c in x[0]])
-#    for k, cal in cals.calendars.items():
-#        print(k, cal.soonest_available_time(timedelta(minutes=30), datetime(2022, 7, 1)))
-#        for d in cal.events:
-#            print(f"\t{d}")
+    duration = timedelta(minutes=namespace.duration_in_minutes)
+    start = datetime(2022, 5, 15)
+    min_people = namespace.minimum_people
+    print(f"{duration=} \n{start=} \n{min_people=}")
+    calendars, time = cals.find_available(duration,
+                                          start,
+                                          min_people)
+    print(", ".join([repr(c.name) for c in calendars]))
+    print(time)
 
