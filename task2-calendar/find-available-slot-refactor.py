@@ -1,11 +1,10 @@
-
-
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from glob import glob
 from sys import argv
 
+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 @dataclass
 class Event:
@@ -22,6 +21,7 @@ class Event:
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.start=} {self.end=})"
+
 
 class Calendar:
     def __init__(self, name: str, duration: datetime, start_time: datetime, events: list[Event]) -> None:
@@ -185,7 +185,7 @@ class CalendarsSlotFinder:
         kto jest dostępny na X od tego czasu
         czy to jest > n ludzi          
         """
-        duration, search_from, min_people = self.duration, self.search_from, self.min_people
+        search_from, min_people = self.search_from, self.min_people
         # edge cases:
         if min_people < 1:
             raise ValueError("'n' has to be at least 1.")
@@ -195,16 +195,24 @@ class CalendarsSlotFinder:
 
         # find soonest available time >= X
         soonest_available_calendar: Calendar = self.update_free_from_time_and_find_soonest_free_time(search_from)
-        # print([cal.free_from.strftime("%Y-%m-%d %H:%M") for cal in self.calendars.values()])
         while True:
-            # Who is available at this time
+            # who is available at this time
             who = self.who_available_at( soonest_available_calendar.free_from)
-            print(f"{len(who) = }")
+            
+            # is this at least the minimum number of people?
             if len(who) >= self.min_people:
                 return who, soonest_available_calendar.free_from
-            calendars = list(filter(lambda x: x.free_from > soonest_available_calendar.free_from, list(self.calendars.values())))
+
+            # calendars, that have free_from time later than the soonest_available_calendar.free_from
+            calendars = list(filter(
+                                lambda x: x.free_from > soonest_available_calendar.free_from,
+                                self.calendars.values()
+                            ))
+            
+            # sort the calendars to find first free_from time
             calendars.sort(key=lambda cal: cal.free_from)
-            print(soonest_available_calendar.name, [cal.name + " " + cal.free_from.strftime("%Y-%m-%d %H:%M") for cal in calendars])
+
+            # all calendars are searched for the nearest free spot that starts after the new free_from
             soonest_available_calendar = self.update_free_from_time_and_find_soonest_free_time(calendars[0].free_from)
 
 
@@ -213,14 +221,13 @@ if __name__ == "__main__":
     parser.add_argument("--duration-in-minutes", type=int, required=True)
     parser.add_argument("--minimum-people", type=int, required=True)
     parser.add_argument("--calendars", type=str, required=True)
+    parser.add_argument("--start", type=str, required=False, default=datetime.now().strftime(DATETIME_FORMAT))
 
-
-    START = datetime(2022, 5, 15)
-    cals = CalendarsSlotFinder("task2-calendar\\in\\", 3, 100, START)
-    DEBUG = False
-    if not DEBUG:
-        namespace = parser.parse_args(argv[1:])
-        cals = CalendarsSlotFinder(namespace.calendars, namespace.minimum_people, namespace.duration_in_minutes, START)
+    namespace = parser.parse_args(argv[1:])
+    cals = CalendarsSlotFinder(namespace.calendars,
+                               namespace.minimum_people,
+                               namespace.duration_in_minutes,
+                               datetime.strptime(namespace.start, DATETIME_FORMAT))
     
     calendars, time = cals.find_available_slot()
     print(", ".join([repr(c.name) for c in calendars]))
